@@ -28,6 +28,7 @@ struct File {
     std::string path; // full path
     int modifiedTime;
     int flags;
+    int size;
 };
 
 struct Directory {
@@ -82,8 +83,8 @@ void checkErr(int err) {
 
 std::vector<File> queryFullDirectory(const std::string& dir) {
     sqlite3_stmt* stmt;
-    int err = sqlite3_prepare_v2(db, "SELECT path, fs_modified, permissions FROM files WHERE path GLOB ? GROUP BY path;", -1, &stmt, nullptr);
-    //const int err = sqlite3_prepare_v2(db, "SELECT path, fs_modified, permissions FROM files WHERE path GLOB \"/home/babbaj/Pictures*\" GROUP BY path;", -1, &stmt, nullptr);
+    //int err = sqlite3_prepare_v2(db, "SELECT path, fs_modified, permissions FROM files WHERE path GLOB ? GROUP BY path;", -1, &stmt, nullptr);
+    int err = sqlite3_prepare_v2(db, "SELECT path, fs_modified, permissions, size FROM files INNER JOIN sizes USING (hash) WHERE path GLOB ? GROUP BY path;", -1, &stmt, nullptr);
     checkErr(err);
     const std::string arg = (dir + "*");
     err = sqlite3_bind_text(stmt, 1, arg.c_str(), arg.size(), nullptr);
@@ -96,11 +97,13 @@ std::vector<File> queryFullDirectory(const std::string& dir) {
             auto* path = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
             const int modified = sqlite3_column_int(stmt, 1);
             const int perms = sqlite3_column_int(stmt, 2);
+            const int size = sqlite3_column_int(stmt, 3);
 
             files.push_back(File {
                 .path =  path,
                 .modifiedTime = modified,
-                .flags = perms
+                .flags = perms,
+                .size = size
             });
         } else {
             break;
@@ -202,7 +205,7 @@ int gbfs_getattr(const char* path, struct stat* st, fuse_file_info *) {
 
                 st->st_mode = S_IFREG | file.flags;
                 st->st_nlink = 1;
-                st->st_size = 666;
+                st->st_size = file.size;
                 st->st_atime = file.modifiedTime;
                 st->st_mtime = file.modifiedTime;
                 return 0;
@@ -225,7 +228,7 @@ static int gbfs_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, 
     //std::cout << "gbfs_readdir: " << path << '\n';
 
     filler(buffer, ".", nullptr, 0, FUSE_FILL_DIR_PLUS);
-	filler(buffer, "..", nullptr, 0, FUSE_FILL_DIR_PLUS);
+    filler(buffer, "..", nullptr, 0, FUSE_FILL_DIR_PLUS);
 
     std::string_view view{path};
     if (view.size() > 1 && view.ends_with('/')) {

@@ -45,6 +45,8 @@ sqlite3 *db = nullptr;
 
 Directory rootDir;
 
+Options options{};
+
 #define OPTION(t, p)                           \
     { t, offsetof(Options, p), 1 }
 static const struct fuse_opt option_spec[] = {
@@ -57,7 +59,7 @@ static const struct fuse_opt option_spec[] = {
 
 
 static void initDatabase() {
-    const int rc = sqlite3_open_v2("/home/babbaj/.gb.db", &db, SQLITE_OPEN_READONLY, nullptr);
+    const int rc = sqlite3_open_v2(options.db_path, &db, SQLITE_OPEN_READONLY, nullptr);
     if (rc != SQLITE_OK) {
         fprintf(stderr, "Cannot open database: %s\n", sqlite3_errmsg(db));
         sqlite3_close(db);
@@ -83,7 +85,6 @@ void checkErr(int err) {
 
 std::vector<File> queryFullDirectory(const std::string& dir) {
     sqlite3_stmt* stmt;
-    //int err = sqlite3_prepare_v2(db, "SELECT path, fs_modified, permissions FROM files WHERE path GLOB ? GROUP BY path;", -1, &stmt, nullptr);
     int err = sqlite3_prepare_v2(db, "SELECT path, fs_modified, permissions, size FROM files INNER JOIN sizes USING (hash) WHERE path GLOB ? GROUP BY path;", -1, &stmt, nullptr);
     checkErr(err);
     const std::string arg = (dir + "*");
@@ -99,7 +100,7 @@ std::vector<File> queryFullDirectory(const std::string& dir) {
             const int perms = sqlite3_column_int(stmt, 2);
             const int size = sqlite3_column_int(stmt, 3);
 
-            files.push_back(File {
+            files.push_back({
                 .path =  path,
                 .modifiedTime = modified,
                 .flags = perms,
@@ -113,7 +114,7 @@ std::vector<File> queryFullDirectory(const std::string& dir) {
     return files;
 }
 
-std::vector<std::string> split0(std::string_view str, std::string_view delim) {
+std::vector<std::string> split(std::string_view str, std::string_view delim) {
     std::vector<std::string> out;
     size_t pos = 0;
     std::string token;
@@ -131,11 +132,11 @@ Directory parseDirectoryStructure(std::span<const File> files) {
     Directory root{"/"};
     for (const auto& f : files) {
         Directory* dir = &root;
-        auto split = split0(f.path, "/");
-        for (int i = 1; i < split.size(); i++) { // start at 1 because first element will be empty
-            const auto& element = split[i];
+        auto parts = split(f.path, "/");
+        for (int i = 1; i < parts.size(); i++) { // start at 1 because first element will be empty
+            const auto& element = parts[i];
             // the last element is the file
-            if (i == split.size() - 1) {
+            if (i == parts.size() - 1) {
                 auto pos = f.path.find_last_of('/');
                 dir->files.emplace(f.path.substr(pos + 1), f);
             } else {
@@ -144,55 +145,40 @@ Directory parseDirectoryStructure(std::span<const File> files) {
                     dir = &dirIt->second;
                 } else {
                     Directory& newDir = dir->directories.emplace(element, Directory{element}).first->second;
-                    //std::cout << "element = " << element << '\n';
                     dir = &newDir;
                 }
             }
         }
-        //std::cout << f.path << '\n';
     }
 
     return root;
 }
 
-template<int err, typename... Args>
-static int unimplemented(Args...) {
-    return -err;
-}
 
 static void* gbfs_init(fuse_conn_info *conn, fuse_config *cfg) {
     cfg->kernel_cache = 0;
     initDatabase();
     rootDir = parseDirectoryStructure(queryFullDirectory("/"));
+    closeDatabase();
 
     return nullptr;
 }
 
-// this function is probably not necessary
 int gbfs_getattr(const char* path, struct stat* st, fuse_file_info *) {
     //std::cout << "gbfs_getattr: " << path << '\n';
 
     st->st_uid = 1000;
     st->st_gid = 100;
 
-    /*if (strcmp( path, "/" ) == 0) {
-		st->st_mode = S_IFDIR | 0755;
-		st->st_nlink = 2;
-	} else {
-        // not actually a real file but don't want to confuse software
-		st->st_mode = S_IFREG | 0644;
-		st->st_nlink = 1;
-		st->st_size = 666;
-	}*/
 
     std::string_view view{path};
     if (view.size() > 1 && view.ends_with('/')) {
         view = view.substr(0, view.size() - 1);
     }
-    auto split = split0(view, "/");
+    auto parts = split(view, "/");
     Directory* dir = &rootDir;
-    for (int i = 1; i < split.size(); i++) { // skip root
-        const auto& name = split[i];
+    for (int i = 1; i < parts.size(); i++) { // skip root
+        const auto& name = parts[i];
         if (name.empty()) break;
         auto it = dir->directories.find(name);
         if (it != dir->directories.end()) {
@@ -200,7 +186,7 @@ int gbfs_getattr(const char* path, struct stat* st, fuse_file_info *) {
         } else {
             auto fileIt = dir->files.find(name);
             if (fileIt != dir->files.end()) {
-                // it is a file!
+                // it is a file
                 const File& file = fileIt->second;
 
                 st->st_mode = S_IFREG | file.flags;
@@ -234,10 +220,10 @@ static int gbfs_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, 
     if (view.size() > 1 && view.ends_with('/')) {
         view = view.substr(0, view.size() - 1);
     }
-    auto split = split0(view, "/");
+    auto parts = split(view, "/");
     Directory* dir = &rootDir;
-    for (int i = 1; i < split.size(); i++) { // skip root
-        const auto& name = split[i];
+    for (int i = 1; i < parts.size(); i++) { // skip root
+        const auto& name = parts[i];
         if (name.empty()) break;
         auto it = dir->directories.find(name);
         if (it != dir->directories.end()) {
@@ -247,7 +233,6 @@ static int gbfs_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, 
         }
     }
 
-    //std::cout << "dir = " << dir->name << '\n';
     for (const auto& [name, dir] : dir->directories) {
         filler(buffer, name.c_str(), nullptr, 0, FUSE_FILL_DIR_PLUS);
     }
@@ -260,7 +245,6 @@ static int gbfs_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, 
 
 static const fuse_operations gbfs_operations = {
     .getattr = &gbfs_getattr,
-    //.read    = &unimplemented<ENOTSUP, const char *, char*, size_t, off_t, fuse_file_info*>,
     .readdir = &gbfs_readdir,
     .init    = &gbfs_init
 };
@@ -297,7 +281,8 @@ int main(int argc, char** argv) {
 
     fuse_args args = FUSE_ARGS_INIT(argc, argv);
 
-    Options options{};
+    options.db_path = strdup("~/.gb.db");
+
     if (fuse_opt_parse(&args, &options, option_spec, nullptr) == -1) {
         return 1;
     }

@@ -114,7 +114,7 @@ std::vector<File> queryFullDirectory(const std::string& dir) {
     return files;
 }
 
-std::vector<std::string> split(std::string_view str, std::string_view delim) {
+std::vector<std::string> split(std::string_view str, char delim) {
     std::vector<std::string> out;
     size_t pos = 0;
     std::string token;
@@ -122,17 +122,18 @@ std::vector<std::string> split(std::string_view str, std::string_view delim) {
     while ((pos = s.find(delim)) != std::string::npos) {
         token = s.substr(0, pos);
         out.push_back(token);
-        s.erase(0, pos + delim.length());
+        s.erase(0, pos + 1);
     }
     out.push_back(s);
     return out;
 }
 
+
 Directory parseDirectoryStructure(std::span<const File> files) {
     Directory root{"/"};
     for (const auto& f : files) {
         Directory* dir = &root;
-        auto parts = split(f.path, "/");
+        auto parts = split(f.path, '/');
         for (int i = 1; i < parts.size(); i++) { // start at 1 because first element will be empty
             const auto& element = parts[i];
             // the last element is the file
@@ -175,7 +176,7 @@ int gbfs_getattr(const char* path, struct stat* st, fuse_file_info *) {
     if (view.size() > 1 && view.ends_with('/')) {
         view = view.substr(0, view.size() - 1);
     }
-    auto parts = split(view, "/");
+    auto parts = split(view, '/');
     Directory* dir = &rootDir;
     for (int i = 1; i < parts.size(); i++) { // skip root
         const auto& name = parts[i];
@@ -220,7 +221,7 @@ static int gbfs_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, 
     if (view.size() > 1 && view.ends_with('/')) {
         view = view.substr(0, view.size() - 1);
     }
-    auto parts = split(view, "/");
+    auto parts = split(view, '/');
     Directory* dir = &rootDir;
     for (int i = 1; i < parts.size(); i++) { // skip root
         const auto& name = parts[i];
@@ -268,6 +269,15 @@ void printDirectoryTree(const Directory& dir) {
     }
 }
 
+std::optional<std::string> getDefaultDb() {
+     auto* home = getenv("HOME");
+     if (home != nullptr) {
+         return std::string{home} + "/.gb.db";
+     } else {
+         return {};
+     }
+}
+
 int main(int argc, char** argv) {
     printf("%s\n", sqlite3_libversion());
     /*initDatabase();
@@ -281,7 +291,10 @@ int main(int argc, char** argv) {
 
     fuse_args args = FUSE_ARGS_INIT(argc, argv);
 
-    options.db_path = strdup("~/.gb.db");
+    const std::optional defaultDb = getDefaultDb();
+    if (defaultDb) {
+        options.db_path = strdup(defaultDb->c_str());
+    }
 
     if (fuse_opt_parse(&args, &options, option_spec, nullptr) == -1) {
         return 1;
@@ -291,11 +304,14 @@ int main(int argc, char** argv) {
 		show_help(argv[0]);
 		assert(fuse_opt_add_arg(&args, "--help") == 0);
 		args.argv[0][0] = '\0';
-	}
+	} else if (options.db_path == nullptr) {
+        puts("Couldn't get default database path because missing HOME variable");
+        return 1;
+    }
 
     const int ret = fuse_main(args.argc, args.argv, &gbfs_operations, nullptr);
 
-    fuse_opt_free_args(&args);
     closeDatabase();
+    fuse_opt_free_args(&args);
     return ret;
 }

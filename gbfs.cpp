@@ -22,6 +22,7 @@
 struct Options {
 	const char *db_path;
 	bool compressed_size;
+	bool use_latest_size; // TODO: implement this correctly
 	bool show_help;
 };
 
@@ -29,7 +30,7 @@ struct File {
     std::string path; // full path
     int modifiedTime;
     int flags;
-    int size;
+    sqlite3_int64 size;
 };
 
 struct Directory {
@@ -53,6 +54,7 @@ Options options{};
 static const struct fuse_opt option_spec[] = {
 	OPTION("--db=%s", db_path),
 	OPTION("--compressed", compressed_size),
+    OPTION("--latest_size", use_latest_size),
 	OPTION("-h", show_help),
 	OPTION("--help", show_help),
 	FUSE_OPT_END
@@ -75,6 +77,7 @@ static void initDatabase() {
 void closeDatabase() {
     if (db != nullptr) {
         sqlite3_close(db);
+        puts("closed db");
     }
 }
 
@@ -85,17 +88,19 @@ void checkErr(int err) {
     }
 }
 
-const char* getQuery() {
+std::string getQuery() {
     if (options.compressed_size) {
-        return "SELECT path, fs_modified, permissions, final_size FROM files INNER JOIN blob_entries USING (hash) WHERE path GLOB ? GROUP BY path";
+        auto sizeStr = (options.use_latest_size ? "final_size" : "SUM(final_size)");
+        return std::string{"SELECT path, fs_modified, permissions, "} + sizeStr + " FROM files INNER JOIN blob_entries USING (hash) WHERE path GLOB ? GROUP BY path";
     } else {
-        return "SELECT path, fs_modified, permissions, size       FROM files INNER JOIN sizes        USING (hash) WHERE path GLOB ? GROUP BY path";
+        auto sizeStr = (options.use_latest_size ? "size" : "SUM(size)");
+        return std::string{"SELECT path, fs_modified, permissions, "} + sizeStr + " FROM files INNER JOIN sizes        USING (hash) WHERE path GLOB ? GROUP BY path";
     }
 }
 
 std::vector<File> queryFullDirectory(const std::string& dir) {
     sqlite3_stmt* stmt;
-    int err = sqlite3_prepare_v2(db, getQuery(), -1, &stmt, nullptr);
+    int err = sqlite3_prepare_v2(db, getQuery().c_str(), -1, &stmt, nullptr);
     checkErr(err);
     const std::string arg = (dir + "*");
     err = sqlite3_bind_text(stmt, 1, arg.c_str(), arg.size(), nullptr);
@@ -108,7 +113,10 @@ std::vector<File> queryFullDirectory(const std::string& dir) {
             auto* path = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
             const int modified = sqlite3_column_int(stmt, 1);
             const int perms = sqlite3_column_int(stmt, 2);
-            const int size = sqlite3_column_int(stmt, 3);
+            const sqlite3_int64 size = sqlite3_column_int64(stmt, 3);
+            if (size == 0) {
+                std::cout << "size = 0\n";
+            }
 
             files.push_back({
                 .path =  path,
@@ -186,6 +194,7 @@ int gbfs_getattr(const char* path, struct stat* st, fuse_file_info *) {
     if (view.size() > 1 && view.ends_with('/')) {
         view = view.substr(0, view.size() - 1);
     }
+
     auto parts = split(view, '/');
     Directory* dir = &rootDir;
     for (int i = 1; i < parts.size(); i++) { // skip root
@@ -267,6 +276,8 @@ static void show_help(const char *progname)
 	       "    --db=<s>          Path to the \"db\" file\n"
 	       "                        (default: \"~/.gb.db\")\n"
            "    --compressed      Show compressed file sizes\n"
+           "                        (default: false)\n"
+           "    --latest-size     Use the size of the newest version instead of summing all versions\n"
            "                        (default: false)\n"
 	       "\n");
 }

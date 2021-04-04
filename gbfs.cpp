@@ -90,11 +90,17 @@ void checkErr(int err) {
 
 std::string getQuery() {
     if (options.compressed_size) {
-        auto sizeStr = (options.use_latest_size ? "final_size" : "SUM(final_size)");
-        return std::string{"SELECT path, fs_modified, permissions, "} + sizeStr + " FROM files INNER JOIN blob_entries USING (hash) WHERE path GLOB ? GROUP BY path";
+        if (options.use_latest_size) {
+            return "SELECT path, fs_modified, permissions, final_size FROM (SELECT path, fs_modified, permissions, hash, MAX(start) AS newest_start FROM files WHERE path GLOB ? GROUP BY path) tmp INNER JOIN blob_entries USING (hash)";
+        } else {
+            return "SELECT path, fs_modified, permissions, SUM(final_size) FROM files INNER JOIN blob_entries USING (hash) WHERE path GLOB ? GROUP BY path";
+        }
     } else {
-        auto sizeStr = (options.use_latest_size ? "size" : "SUM(size)");
-        return std::string{"SELECT path, fs_modified, permissions, "} + sizeStr + " FROM files INNER JOIN sizes        USING (hash) WHERE path GLOB ? GROUP BY path";
+        if (options.use_latest_size) {
+            return "SELECT path, fs_modified, permissions, size FROM (SELECT path, fs_modified, permissions, hash, MAX(start) AS newest_start FROM files WHERE path GLOB ? GROUP BY path) tmp INNER JOIN sizes USING (hash)";
+        } else {
+            return "SELECT path, fs_modified, permissions, SUM(size) FROM files INNER JOIN sizes USING (hash) WHERE path GLOB ? GROUP BY path";
+        }
     }
 }
 
@@ -114,9 +120,6 @@ std::vector<File> queryFullDirectory(const std::string& dir) {
             const int modified = sqlite3_column_int(stmt, 1);
             const int perms = sqlite3_column_int(stmt, 2);
             const sqlite3_int64 size = sqlite3_column_int64(stmt, 3);
-            if (size == 0) {
-                std::cout << "size = 0\n";
-            }
 
             files.push_back({
                 .path =  path,

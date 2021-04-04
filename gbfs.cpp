@@ -21,8 +21,8 @@
 
 struct Options {
 	const char *db_path;
-	bool compressed_size;
-	bool use_latest_size; // TODO: implement this correctly
+	bool uncompressed_size;
+	bool use_latest_size;
 	bool show_help;
 };
 
@@ -53,7 +53,7 @@ Options options{};
     { t, offsetof(Options, p), 1 }
 static const struct fuse_opt option_spec[] = {
 	OPTION("--db=%s", db_path),
-	OPTION("--compressed", compressed_size),
+	OPTION("--uncompressed", uncompressed_size),
     OPTION("--latest_size", use_latest_size),
 	OPTION("-h", show_help),
 	OPTION("--help", show_help),
@@ -78,6 +78,7 @@ void closeDatabase() {
     if (db != nullptr) {
         sqlite3_close(db);
         puts("closed db");
+        db = nullptr;
     }
 }
 
@@ -89,7 +90,7 @@ void checkErr(int err) {
 }
 
 std::string getQuery() {
-    if (options.compressed_size) {
+    if (!options.uncompressed_size) {
         if (options.use_latest_size) {
             return "SELECT path, fs_modified, permissions, final_size FROM (SELECT path, fs_modified, permissions, hash, MAX(start) AS newest_start FROM files WHERE path GLOB ? GROUP BY path) tmp INNER JOIN blob_entries USING (hash)";
         } else {
@@ -278,7 +279,7 @@ static void show_help(const char *progname)
 	printf("gbfs options:\n"
 	       "    --db=<s>          Path to the \"db\" file\n"
 	       "                        (default: \"~/.gb.db\")\n"
-           "    --compressed      Show compressed file sizes\n"
+           "    --uncompressed    Show uncompressed file sizes\n"
            "                        (default: false)\n"
            "    --latest-size     Use the size of the newest version instead of summing all versions\n"
            "                        (default: false)\n"

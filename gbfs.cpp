@@ -21,6 +21,7 @@
 
 struct Options {
 	const char *db_path;
+	bool compressed_size;
 	bool show_help;
 };
 
@@ -51,6 +52,7 @@ Options options{};
     { t, offsetof(Options, p), 1 }
 static const struct fuse_opt option_spec[] = {
 	OPTION("--db=%s", db_path),
+	OPTION("--compressed", compressed_size),
 	OPTION("-h", show_help),
 	OPTION("--help", show_help),
 	FUSE_OPT_END
@@ -83,9 +85,17 @@ void checkErr(int err) {
     }
 }
 
+const char* getQuery() {
+    if (options.compressed_size) {
+        return "SELECT path, fs_modified, permissions, final_size FROM files INNER JOIN blob_entries USING (hash) WHERE path GLOB ? GROUP BY path";
+    } else {
+        return "SELECT path, fs_modified, permissions, size       FROM files INNER JOIN sizes        USING (hash) WHERE path GLOB ? GROUP BY path";
+    }
+}
+
 std::vector<File> queryFullDirectory(const std::string& dir) {
     sqlite3_stmt* stmt;
-    int err = sqlite3_prepare_v2(db, "SELECT path, fs_modified, permissions, size FROM files INNER JOIN sizes USING (hash) WHERE path GLOB ? GROUP BY path;", -1, &stmt, nullptr);
+    int err = sqlite3_prepare_v2(db, getQuery(), -1, &stmt, nullptr);
     checkErr(err);
     const std::string arg = (dir + "*");
     err = sqlite3_bind_text(stmt, 1, arg.c_str(), arg.size(), nullptr);
@@ -256,6 +266,8 @@ static void show_help(const char *progname)
 	printf("gbfs options:\n"
 	       "    --db=<s>          Path to the \"db\" file\n"
 	       "                        (default: \"~/.gb.db\")\n"
+           "    --compressed      Show compressed file sizes\n"
+           "                        (default: false)\n"
 	       "\n");
 }
 
